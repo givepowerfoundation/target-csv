@@ -6,12 +6,8 @@ import os
 import sys
 import json
 import csv
-import threading
-import http.client
-import urllib
 from datetime import datetime
 import collections
-import pkg_resources
 
 from jsonschema.validators import Draft4Validator
 import singer
@@ -38,14 +34,17 @@ def flatten(d, parent_key="", sep="__"):
     return dict(items)
 
 
-def persist_messages(delimiter, quotechar, messages, destination_path):
+def persist_messages(messages, output_folder):
+    delimiter = ","
+    quotechar = '"'
+
     state = None
     schemas = {}
     key_properties = {}
     headers = {}
     validators = {}
 
-    now = datetime.now().strftime("%Y%m%dT%H%M%S")
+    date = datetime.now().strftime("%Y-%m-%d")
 
     for message in messages:
         try:
@@ -63,14 +62,15 @@ def persist_messages(delimiter, quotechar, messages, destination_path):
 
             validators[o["stream"]].validate(o["record"])
 
-            filename = o["stream"] + "-" + now + ".csv"
-            filename = os.path.expanduser(os.path.join(destination_path, filename))
+            filename = o["stream"] + f"--{date}.csv"
+            filename = os.path.join(output_folder, filename)
             file_is_empty = (not os.path.isfile(filename)) or os.stat(
                 filename
             ).st_size == 0
 
             flattened_record = flatten(o["record"])
 
+            # get headers from file if not empty and we haven't stored them yet
             if o["stream"] not in headers and not file_is_empty:
                 with open(filename, "r") as csvfile:
                     reader = csv.reader(
@@ -111,25 +111,6 @@ def persist_messages(delimiter, quotechar, messages, destination_path):
     return state
 
 
-def send_usage_stats():
-    try:
-        version = pkg_resources.get_distribution("target-csv").version
-        conn = http.client.HTTPConnection("collector.singer.io", timeout=10)
-        conn.connect()
-        params = {
-            "e": "se",
-            "aid": "singer",
-            "se_ca": "target-csv",
-            "se_ac": "open",
-            "se_la": version,
-        }
-        conn.request("GET", "/i?" + urllib.parse.urlencode(params))
-        response = conn.getresponse()
-        conn.close()
-    except:
-        logger.debug("Collection request failed")
-
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("-c", "--config", help="Config file")
@@ -141,20 +122,10 @@ def main():
     else:
         config = {}
 
-    if not config.get("disable_collection", False):
-        logger.info(
-            "Sending version information to singer.io. "
-            + "To disable sending anonymous usage data, set "
-            + 'the config parameter "disable_collection" to true'
-        )
-        threading.Thread(target=send_usage_stats).start()
-
     input_messages = io.TextIOWrapper(sys.stdin.buffer, encoding="utf-8")
     state = persist_messages(
-        config.get("delimiter", ","),
-        config.get("quotechar", '"'),
         input_messages,
-        config.get("destination_path", ""),
+        config["output_folder"],
     )
 
     emit_state(state)
